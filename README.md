@@ -10,15 +10,15 @@ A terminal-based AI coding agent in the same category as Claude Code and OpenAI 
 
 ## Core Features
 
-**Multi-agent orchestration** — a main agent automatically spawns parallel sub-agents and synthesizes their results. Each agent has a role: planner, coder, reviewer, tester.
-**Smart model routing** — the orchestrator runs a capable model (e.g. Claude Sonnet) while sub-agents run faster, cheaper models (e.g. Haiku). You get a team at the cost of a generalist.
-**Context engineering** — automatic chat compaction, tool-result trimming, and sliding context windows so agents never drown in their own history.
-**Real-time token dashboard** — live cost tracking per agent, budget warnings at configurable thresholds, and a hard cap that stops execution before your wallet bleeds.
-**Safety-first tool execution** — all bash commands and file operations are classified (safe/review/blocked) before execution, with allowlist/blocklist in config.
-**Partial file editing** — surgical edits via search/replace, not full-file rewrites.
-**Bash execution** — full shell access with safety classification.
-**Docker-packaged** — `docker compose up`, set your API key in `.env`, done. Runs on any machine.
-**Fully configurable** — model selection, token budgets, safety rules, all in a YAML config. No hardcoded values.
+**Multi-agent orchestration** a main agent automatically spawns parallel sub-agents and synthesizes their results. Each agent has a role: planner, coder, reviewer, tester.
+**Smart model routing** the orchestrator runs a capable model (e.g. Claude Sonnet) while sub-agents run faster, cheaper models (e.g. Haiku). You get a team at the cost of a generalist.
+**Context engineering** automatic chat compaction, tool-result trimming, and sliding context windows so agents never drown in their own history.
+**Real-time token dashboard** live cost tracking per agent, budget warnings at configurable thresholds, and a hard cap that stops execution before your wallet bleeds.
+**Safety-first tool execution** all bash commands and file operations are classified (safe/review/blocked) before execution, with allowlist/blocklist in config.
+**Partial file editing** surgical edits via search/replace, not full-file rewrites.
+**Bash execution** full shell access with safety classification.
+**Docker-packaged** `docker compose up`, set your API key in `.env`, done. Runs on any machine.
+**Fully configurable** model selection, token budgets, safety rules, all in a YAML config. No hardcoded values.
 
 ## Project Philosophy
 
