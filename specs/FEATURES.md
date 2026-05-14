@@ -1,4 +1,4 @@
-# MAESTRO — Feature Specifications
+# iTakt — Feature Specifications
 
 ## F1: Multi-Agent Orchestration
 
@@ -164,7 +164,7 @@ docker compose up
 
 ### Volume Mounts
 - Project directory mounted at `/workspace` (so agents can read/edit project files)
-- Config file mounted at `/app/maestro.yaml`
+- Config file mounted at `/app/itakt.yaml`
 
 ## F9: Autonomous Agent Loop
 

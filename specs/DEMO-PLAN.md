@@ -1,4 +1,4 @@
-# MAESTRO — Live Demo Plan
+# iTakt — Live Demo Plan
 
 ## Presentation: 5-10 minutes
 
@@ -97,7 +97,7 @@ After live demos, briefly walk through:
 ## Prep Checklist
 
 - [ ] Small Flask app in demo project directory
-- [ ] `maestro.yaml` configured with reasonable budget
+- [ ] `itakt.yaml` configured with reasonable budget
 - [ ] `.env` with valid API key
 - [ ] Docker image built and tested
 - [ ] Low-budget config ready for Demo 3

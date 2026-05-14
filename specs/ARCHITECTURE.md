@@ -1,8 +1,8 @@
-# MAESTRO — System Architecture
+# iTakt — System Architecture
 
 ## Overview
 
-MAESTRO is a terminal-based multi-agent coding system. A user submits a task in natural language. The system decomposes it, delegates to specialized sub-agents, and synthesizes the result — with full cost control and safety guarantees.
+iTakt is a terminal-based multi-agent coding system. A user submits a task in natural language. The system decomposes it, delegates to specialized sub-agents, and synthesizes the result — with full cost control and safety guarantees.
 
 ## High-Level Architecture
 
@@ -148,7 +148,7 @@ All tools pass through the Safety Layer before execution.
 See [CONFIG.md](./CONFIG.md) for full specification.
 
 Two sources:
-- `maestro.yaml` — all settings (models, budgets, safety rules, etc.)
+- `itakt.yaml` — all settings (models, budgets, safety rules, etc.)
 - `.env` — secrets only (API keys)
 
 ## Data Flow: A Typical Task

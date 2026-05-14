@@ -1,4 +1,4 @@
-# MAESTRO — Configuration Specification
+# iTakt — Configuration Specification
 
 ## Principles
 
@@ -17,14 +17,14 @@ OPENAI_API_KEY=sk-...
 GROQ_API_KEY=gsk_...
 
 # Optional: override config file path
-MAESTRO_CONFIG=./maestro.yaml
+iTakt_CONFIG=./itakt.yaml
 ```
 
-## Configuration File (maestro.yaml)
+## Configuration File (itakt.yaml)
 
 ```yaml
 # ============================================
-# MAESTRO Configuration
+# iTakt Configuration
 # ============================================
 
 # --- Model Configuration ---
@@ -134,7 +134,7 @@ ui:
 # --- Logging ---
 logging:
   level: INFO  # DEBUG, INFO, WARNING, ERROR
-  file: ./maestro.log
+  file: ./itakt.log
   log_tool_calls: true
   log_token_usage: true
 ```
@@ -144,7 +144,7 @@ logging:
 Shipped with the repository:
 
 ```bash
-# MAESTRO Environment Variables
+# iTakt Environment Variables
 # Copy this file to .env and fill in your API key(s)
 
 # Required: Anthropic API key (for Claude models)
@@ -159,7 +159,7 @@ ANTHROPIC_API_KEY=your-key-here
 
 ## Config Validation
 
-On startup, MAESTRO validates the configuration:
+On startup, iTakt validates the configuration:
 1. Check that at least one API key is set in environment
 2. Validate YAML structure against schema
 3. Verify referenced models match the configured provider

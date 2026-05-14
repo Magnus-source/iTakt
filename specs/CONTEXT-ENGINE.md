@@ -1,4 +1,4 @@
-# MAESTRO — Context Engine Specification
+# iTakt — Context Engine Specification
 
 ## Problem
 

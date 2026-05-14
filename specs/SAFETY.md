@@ -1,4 +1,4 @@
-# MAESTRO — Safety Layer Specification
+# iTakt — Safety Layer Specification
 
 ## Purpose
 
@@ -47,7 +47,7 @@ Default blocked patterns:
 
 ## Configuration
 
-Safety rules are fully configurable in `maestro.yaml`:
+Safety rules are fully configurable in `itakt.yaml`:
 
 ```yaml
 safety:
