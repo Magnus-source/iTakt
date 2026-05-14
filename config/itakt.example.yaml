@@ -1,7 +1,7 @@
 # ============================================
-# MAESTRO Configuration — Example
+# iTakt Configuration — Example
 # ============================================
-# Copy to maestro.yaml and customize as needed.
+# Copy to itakt.yaml and customize as needed.
 # API keys go in .env, NOT here.
 
 models:
@@ -76,6 +76,6 @@ ui:
 
 logging:
   level: INFO
-  file: ./maestro.log
+  file: ./itakt.log
   log_tool_calls: true
   log_token_usage: true
