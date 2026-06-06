@@ -1,0 +1,85 @@
+# ============================================
+# iTakt Configuration
+# ============================================
+# API keys go in .env, NOT here.
+
+models:
+  orchestrator:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    max_tokens: 4096
+    temperature: 0.3
+  sub_agents:
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    max_tokens: 2048
+    temperature: 0.2
+  compaction:
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    max_tokens: 1024
+    temperature: 0.1
+
+budget:
+  hard_cap_tokens: 500000
+  hard_cap_usd: 5.00
+  warning_thresholds:
+    - 0.70
+    - 0.90
+  pricing:
+    anthropic:
+      claude-sonnet-4-6:
+        input: 3.00
+        output: 15.00
+      claude-haiku-4-5-20251001:
+        input: 0.80
+        output: 4.00
+
+context:
+  compaction_threshold: 0.6
+  preserve_recent: 4
+  max_tool_result_tokens: 2000
+  truncation_strategy: head_tail
+
+agents:
+  max_parallel: 3
+  max_iterations: 20
+  roles:
+    - planner
+    - coder
+    - reviewer
+    - tester
+
+safety:
+  block_sudo: true
+  auto_approve_writes: false
+  max_write_size: 1048576
+  allowlist:
+    - pattern: "pytest"
+      classification: safe
+    - pattern: "python -m pytest"
+      classification: safe
+    - pattern: "git status"
+      classification: safe
+    - pattern: "git diff"
+      classification: safe
+    - pattern: "git log"
+      classification: safe
+  blocklist:
+    - pattern: "rm -rf /"
+      classification: blocked
+      reason: "Root deletion not allowed"
+    - pattern: "rm -rf ~"
+      classification: blocked
+      reason: "Home directory deletion not allowed"
+
+ui:
+  show_agent_activity: true
+  show_token_dashboard: true
+  theme: dark
+
+logging:
+  level: INFO
+  file: ./itakt.log
+  log_tool_calls: true
+  log_token_usage: true
