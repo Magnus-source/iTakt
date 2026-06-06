@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 
 from .agent import _content_to_dicts
+from .compaction import compact_messages, should_compact
 from .config import Config
 from .monitor import TokenMonitor
 from .provider import AnthropicProvider
@@ -105,11 +106,23 @@ async def run_sub_agent(
     final_message = "(sub-agent produced no output)"
     status = "success"
 
-    for _ in range(config.agents.max_iterations):
+    for iteration in range(config.agents.max_iterations):
         if monitor.is_over_budget():
             final_message = "[stopped: budget cap reached]"
             status = "budget_cap"
             break
+
+        # Auto-compact when sub-agent history gets long
+        if iteration > 0 and should_compact(messages, config.context):
+            messages = await compact_messages(
+                messages=messages,
+                system=system,
+                context_cfg=config.context,
+                provider=provider,
+                model_cfg=config.models.compaction,
+                agent_name=agent_name,
+                traces_dir="traces",
+            )
 
         response = await provider.complete(
             system=system,
