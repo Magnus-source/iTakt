@@ -7,8 +7,8 @@ import sys
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 
-from .agent import run_agent
 from .config import load_config
+from .orchestrator import run_orchestrator
 from .monitor import TokenMonitor
 from .provider import AnthropicProvider
 from .safety import SafetyLayer
@@ -57,7 +57,7 @@ async def run_repl() -> None:
             break
 
         print()
-        result = await run_agent(
+        result = await run_orchestrator(
             task=task,
             config=config,
             provider=provider,
