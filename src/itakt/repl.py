@@ -7,9 +7,11 @@ import sys
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 
+from .compaction import compact_messages, estimate_tokens
 from .config import load_config
-from .orchestrator import run_orchestrator
+from .dashboard import render_dashboard
 from .monitor import TokenMonitor
+from .orchestrator import run_orchestrator, ORCHESTRATOR_SYSTEM
 from .provider import AnthropicProvider
 from .safety import SafetyLayer
 from .tools import ToolRegistry
@@ -18,7 +20,9 @@ from .tools import ToolRegistry
 BANNER = """\
 ╔══════════════════════════════════════╗
 ║  iTakt — AI coding agent  v0.1.0    ║
-║  Type your task, or 'exit' to quit. ║
+║  Type a task, or:                   ║
+║    /compact  force context compact  ║
+║    exit      quit                   ║
 ╚══════════════════════════════════════╝"""
 
 
@@ -38,6 +42,9 @@ async def run_repl() -> None:
         audit_log_path=config.logging.file.replace(".log", "_audit.log"),
     )
 
+    # Session-level exchange log — used by /compact to demonstrate compaction
+    session_exchanges: list[dict] = []
+
     print(BANNER)
     print()
 
@@ -45,20 +52,41 @@ async def run_repl() -> None:
 
     while True:
         try:
-            task = (await session.prompt_async("> ")).strip()
+            raw = (await session.prompt_async("> ")).strip()
         except (EOFError, KeyboardInterrupt):
             print("\n[iTakt] Goodbye.")
             break
 
-        if not task:
+        if not raw:
             continue
-        if task.lower() in ("exit", "quit", "q"):
+        if raw.lower() in ("exit", "quit", "q"):
             print("[iTakt] Goodbye.")
             break
 
+        # /compact command — force compact the session exchange log
+        if raw.lower() == "/compact":
+            if not session_exchanges:
+                print("[context] No session history to compact yet.")
+                continue
+            before = estimate_tokens(session_exchanges)
+            print(f"[context] Forcing compaction of session log ({before:,} est. tokens)…")
+            session_exchanges = await compact_messages(
+                messages=session_exchanges,
+                system=ORCHESTRATOR_SYSTEM,
+                context_cfg=config.context,
+                provider=provider,
+                model_cfg=config.models.compaction,
+                agent_name="repl-session",
+                traces_dir="traces",
+            )
+            after = estimate_tokens(session_exchanges)
+            print(f"[context] Session log: {before:,} → {after:,} tokens")
+            print(f"  {monitor.status_line()}")
+            continue
+
         print()
         result = await run_orchestrator(
-            task=task,
+            task=raw,
             config=config,
             provider=provider,
             monitor=monitor,
@@ -67,5 +95,12 @@ async def run_repl() -> None:
         print()
         print(result)
         print()
-        print(f"  {monitor.status_line()}")
+
+        # Accumulate session history for /compact
+        session_exchanges.append({"role": "user", "content": raw})
+        session_exchanges.append(
+            {"role": "assistant", "content": [{"type": "text", "text": result[:500]}]}
+        )
+
+        render_dashboard(monitor)
         print()

@@ -8,6 +8,7 @@ from collections import defaultdict
 from .agent import _content_to_dicts
 from .compaction import compact_messages, should_compact
 from .config import Config
+from .dashboard import check_and_print_warnings, budget_summary
 from .monitor import TokenMonitor
 from .provider import AnthropicProvider
 from .safety import SafetyLayer
@@ -94,8 +95,8 @@ async def run_orchestrator(
     print(f"[agent] orchestrator ({model_cfg.model}) started")
 
     for iteration in range(config.agents.max_iterations):
-        if monitor.is_over_budget():
-            return f"[iTakt] Budget cap reached.\n{monitor.status_line()}"
+        if check_and_print_warnings(monitor):
+            return budget_summary(monitor)
 
         # Auto-compact when messages history exceeds threshold
         if iteration > 0 and should_compact(messages, config.context):

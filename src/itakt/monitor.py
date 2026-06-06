@@ -23,6 +23,7 @@ class TokenMonitor:
         self._total_output: int = 0
         self._total_cost: float = 0.0
         self._steps: int = 0
+        self._warned_thresholds: set[float] = set()
 
     def record(
         self,
@@ -75,6 +76,18 @@ class TokenMonitor:
         tok_frac = self.total_tokens() / max(self._budget.hard_cap_tokens, 1)
         usd_frac = self._total_cost / max(self._budget.hard_cap_usd, 0.001)
         return max(tok_frac, usd_frac)
+
+    def agents_usage(self) -> dict[str, AgentUsage]:
+        return dict(self._agents)
+
+    def check_thresholds(self) -> Optional[str]:
+        """Return newly-crossed threshold level ('70' or '90') or None."""
+        frac = self.budget_fraction()
+        for threshold in sorted(self._budget.warning_thresholds):
+            if frac >= threshold and threshold not in self._warned_thresholds:
+                self._warned_thresholds.add(threshold)
+                return str(int(threshold * 100))
+        return None
 
     def status_line(self) -> str:
         pct = self.budget_fraction() * 100
