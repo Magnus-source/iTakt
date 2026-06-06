@@ -7,8 +7,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from prompt_toolkit import prompt as pt_prompt
-
 from .config import SafetyConfig
 from .tools import ToolRegistry
 
@@ -185,7 +183,7 @@ class SafetyLayer:
         print("=" * 60)
 
         try:
-            answer = pt_prompt("[A]pprove / [D]eny > ").strip().lower()
+            answer = input("[A]pprove / [D]eny > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "d"
 

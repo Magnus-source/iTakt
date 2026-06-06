@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 
 from .agent import run_agent
@@ -41,11 +41,11 @@ async def run_repl() -> None:
     print(BANNER)
     print()
 
-    history = InMemoryHistory()
+    session: PromptSession = PromptSession(history=InMemoryHistory())
 
     while True:
         try:
-            task = pt_prompt("> ", history=history).strip()
+            task = (await session.prompt_async("> ")).strip()
         except (EOFError, KeyboardInterrupt):
             print("\n[iTakt] Goodbye.")
             break
