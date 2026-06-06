@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.markup import escape
 
 from .monitor import TokenMonitor
 
@@ -60,11 +61,11 @@ def render_dashboard(monitor: TokenMonitor) -> None:
         Text(f"{cap_tok:,} tok", style="dim"),
         Text(f"${cap_usd:.2f}", style="dim"),
     )
-    grid.add_row(
-        Text(f"[{bar_color}]{bar_filled}{bar_empty}[/{bar_color}]  {pct:.1f}%"),
-        Text(""),
-        Text(""),
-    )
+    bar_text = Text()
+    bar_text.append(bar_filled, style=bar_color)
+    bar_text.append(bar_empty, style="dim")
+    bar_text.append(f"  {pct:.1f}%")
+    grid.add_row(bar_text, Text(""), Text(""))
 
     if agents:
         grid.add_row(Text(""), Text(""), Text(""))
