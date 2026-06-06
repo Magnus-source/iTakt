@@ -1,4 +1,142 @@
-# iTakt — Night 1 Progress
+# iTakt — Progress Log
+
+---
+
+## Day 2 — Multi-Agent Orchestration
+
+### Demo 2 Output
+
+```
+$ .venv/bin/python demo2_runner.py
+
+============================================================
+Demo 2: Multi-Agent Orchestration
+============================================================
+[agent] orchestrator (claude-sonnet-4-6) started
+[agent] spawn coder-1 (claude-haiku-4-5-20251001) t+67.1s
+[agent] spawn tester-1 (claude-haiku-4-5-20251001) t+67.1s   ← same timestamp = parallel start
+[agent] return coder-1 tokens=5130 usd=$0.0041 t+71.9s
+[agent] return tester-1 tokens=8742 usd=$0.0070 t+76.0s
+[agent] 2 sub-agents ran in parallel (overlap confirmed)
+============================================================
+Orchestrator response:
+Everything is done and all **3 tests pass**. Here's a summary:
+  - demo/app.py: added /health endpoint (status: ok, timestamp: UTC ISO)
+  - demo/test_health.py: 3 tests — status_code, status_field, timestamp_field
+  - pytest: 3 passed in 0.11s
+ctx 87,160 tok | $0.2636 | steps 23 | budget 17.4%
+```
+
+**Audit log confirms:**
+```
+coder-1  TOOL read_file  'demo/app.py'          → SAFE → EXECUTED   (23:42:39)
+tester-1 TOOL read_file  'demo/app.py'          → SAFE → EXECUTED   (23:42:39)  ← same second
+coder-1  TOOL write_file 'demo/app.py'          → SAFE → EXECUTED   (23:42:41)
+tester-1 TOOL write_file 'demo/test_health.py'  → SAFE → EXECUTED   (23:42:42)
+orchestrator TOOL bash   'pytest ...'           → SAFE → EXECUTED   (23:42:57)
+```
+
+---
+
+### How parallelism works (asyncio.gather)
+
+When the orchestrator's LLM response contains multiple `spawn_sub_agent` tool calls
+in a single turn, `run_orchestrator()` collects them all and runs:
+
+```python
+gathered = await asyncio.gather(*[_spawn_one(tc) for tc in spawn_calls])
+```
+
+`asyncio.gather` submits every coroutine to the **same event loop** and switches
+between them whenever one hits an `await` (i.e., every time a coroutine is waiting
+for an HTTP response from Anthropic). This means:
+
+1. Both `provider.complete()` calls go out over the network **simultaneously** —
+   neither waits for the other to finish before starting.
+2. While the first coroutine is blocked waiting for its API response, the event
+   loop is free to advance the second coroutine's API call.
+3. The two Anthropic API calls therefore overlap in wall-clock time, even though
+   only one thread is used.
+
+This is confirmed by the timestamps: both sub-agents print `t+67.1s` (same value
+to one decimal place), meaning they started within 100 ms of each other even though
+they each take ~5 s of API time.
+
+A `asyncio.Semaphore(config.agents.max_parallel)` caps concurrency: if more
+sub-agents are requested than `max_parallel` allows, the excess wait for a slot
+before making their first API call.
+
+**Why not threads?** `asyncio` is sufficient because the bottleneck is network I/O
+(waiting for Anthropic). All Python code between `await` points runs on one thread,
+so there is no GIL contention and no risk of race conditions on shared Python objects
+(like the `TokenMonitor`).
+
+---
+
+### How model routing works
+
+Model selection is fully config-driven — nothing is hardcoded:
+
+| Agent | Config key | Default model |
+|---|---|---|
+| Orchestrator | `models.orchestrator.model` | `claude-sonnet-4-6` |
+| Sub-agents | `models.sub_agents.model` | `claude-haiku-4-5-20251001` |
+| Compaction | `models.compaction.model` | `claude-haiku-4-5-20251001` |
+
+`run_orchestrator()` passes `config.models.orchestrator` to `provider.complete()`.
+`run_sub_agent()` passes `config.models.sub_agents`. The provider client (`AnthropicProvider`)
+uses whatever `ModelConfig.model` it receives — it has no knowledge of roles.
+
+To swap models (e.g., use Opus for the orchestrator), only `itakt.yaml` needs to
+change — no code changes required.
+
+---
+
+### Day 2 Components
+
+#### 1. Sub-agent runner (`src/itakt/subagent.py`)
+- `run_sub_agent(role, task, context, config, provider, monitor, safety, agent_name, t0)`
+- Own clean message history — no shared state with the orchestrator's conversation
+- Uses `config.models.sub_agents` (Haiku) — confirmed by `[agent] spawn ... (claude-haiku-...)` logs
+- Imports `_content_to_dicts` from `agent.py` (reuses Night-1 helper)
+- `compress_result()` formats the sub-agent's final output into the CONTEXT-ENGINE.md summary format
+- Prints `[agent] spawn NAME MODEL t+Xs` on start, `[agent] return NAME tokens=N t+Xs` on finish
+
+**Proving command:** `grep "spawn\|return" <(python demo2_runner.py 2>&1)` — shows overlapping timestamps
+
+#### 2. Orchestrator (`src/itakt/orchestrator.py`)
+- `run_orchestrator(task, config, provider, monitor, safety)`
+- Splits each LLM turn's tool calls into `spawn_calls` (→ `asyncio.gather`) and `regular_calls` (→ sync safety layer)
+- `SPAWN_SUB_AGENT_SCHEMA` — role enum, task, context (optional)
+- `asyncio.Semaphore(config.agents.max_parallel)` caps parallel sub-agents
+- Prints `N sub-agents ran in parallel (overlap confirmed)` after each batch
+
+**Proving command:** `.venv/bin/python demo2_runner.py`
+
+#### 3. REPL updated
+- `repl.py` now calls `run_orchestrator()` instead of `run_agent()`
+- `run_agent()` in `agent.py` preserved (still importable, not deleted)
+
+#### 4. Demo project (`demo/app.py`)
+- Minimal Flask app with `/` endpoint
+- `/health` endpoint added by the coder sub-agent during Demo 2
+- `demo/test_health.py` written by the tester sub-agent during Demo 2
+
+**Proving command:** `.venv/bin/python -m pytest demo/test_health.py -v` → 3 passed
+
+#### 5. Tests (`tests/test_orchestrator.py`) — 20 tests
+- Schema validation for `spawn_sub_agent`
+- `test_parallel_execution_is_concurrent` — asserts elapsed < 0.55s for two 0.3s coroutines
+- `test_semaphore_caps_concurrency` — asserts Semaphore(1) serialises execution
+- `test_gather_preserves_result_order` — asserts results arrive in call order
+- Model routing — asserts sonnet for orchestrator, haiku for sub-agents
+- Result compression — asserts format includes role, task, result, token count
+
+**Proving command:** `.venv/bin/python -m pytest tests/ -q` → 81 passed
+
+---
+
+## Night 1 Progress
 
 ## Demo 1 Output (pasted per working-discipline requirement)
 
