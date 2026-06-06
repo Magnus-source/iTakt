@@ -51,6 +51,7 @@ class ContextConfig(BaseModel):
     preserve_recent: int = 4
     max_tool_result_tokens: int = 2000
     truncation_strategy: str = "head_tail"
+    context_window_tokens: int = 200_000  # assumed model context window for threshold calc
 
 
 class AgentsConfig(BaseModel):

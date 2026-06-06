@@ -253,7 +253,11 @@ class ToolRegistry:
     def execute(self, name: str, inputs: dict) -> str:
         """Execute a tool and return its result as a string."""
         if name == "read_file":
-            return read_file(inputs["path"])
+            content = read_file(inputs["path"])
+            # Trim large files just like bash output; never trim error messages
+            if not content.startswith("ERROR:"):
+                content = _trim(content, self._max_chars)
+            return content
 
         if name == "list_directory":
             return list_directory(inputs.get("path", "."))
