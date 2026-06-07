@@ -2,6 +2,112 @@
 
 ---
 
+## Day 5 — Hardening + Web GUI
+
+### Acceptance gate: smoke test 9/9 ✅ | pytest 139/139 ✅
+
+```
+$ bash scripts/smoke.sh
+9 passed / 0 failed
+
+$ .venv/bin/python -m pytest tests/ -q
+139 passed in 1.99s
+```
+
+---
+
+### Phase 1 — Hardening
+
+#### 1.1 Safety: defense-in-depth for destructive ops in safe wrappers
+
+**Gap fixed:** `find . -type d -name __pycache__ -exec rm -rf {} +` was previously
+classified SAFE because `_SAFE_BASH_RE` matched the `find` prefix before the embedded
+`rm -rf` was checked.
+
+**Fix:** Added `_DESTRUCTIVE_ANYWHERE_RE` that runs **between** the config allowlist and
+the safe-prefix match. If any recursive `rm`, `-exec rm`, or `xargs rm` appears **anywhere**
+in the command, it is routed to REVIEW before the safe-prefix test can fire. The catastrophic
+forms (`rm -rf /`, `rm -rf ~`, `chmod 777`, `dd`, etc.) remain BLOCKED by `_BLOCKED_BASH_RE`.
+
+New classification order:
+```
+1. Config blocklist          → BLOCKED
+2. sudo                      → BLOCKED
+3. _BLOCKED_BASH_RE          → BLOCKED (catastrophic)
+4. Config allowlist          → safe/review
+5. _DESTRUCTIVE_ANYWHERE_RE  → REVIEW  ← NEW: destructive op anywhere
+6. _SAFE_BASH_RE             → SAFE    (safe prefix AND no destructive content)
+7. default                   → REVIEW
+```
+
+Result:
+- `find ... -exec rm -rf {} +` → REVIEW ✓ (never SAFE again)
+- `ls && rm -rf localdir`      → REVIEW ✓
+- `git ls-files | xargs rm -rf`→ REVIEW ✓
+- `find . -name "*.py"`        → SAFE ✓  (no destructive, find prefix still safe)
+
+14 new tests in `test_safety.py`.
+
+#### 1.2 Compaction guard against immediate re-compaction
+
+**Gap fixed:** `should_compact()` is a pure function that can return True on
+consecutive iterations if the compacted result is still above the threshold, causing
+the agent to loop-compact endlessly.
+
+**Fix:** Added `last_compacted_at = -2` before each loop (orchestrator + subagent).
+Compaction is skipped on iteration `last_compacted_at + 1`. One quiet turn passes
+before the agent can compact again.
+
+4 new tests in `test_compaction.py`.
+
+#### 1.3 `datetime.utcnow()` deprecation in demo/app.py
+
+Changed `datetime.utcnow().isoformat()` → `datetime.now(datetime.UTC).isoformat()`.
+Eliminates `DeprecationWarning` on Python 3.12+. All 6 demo health endpoint tests pass.
+
+---
+
+### Phase 2 — Web Dashboard
+
+#### Architecture
+
+The dashboard is **entirely additive** — it reads files, never writes to agent state,
+and every write in the agent is wrapped in `try/except` so it can never break a session.
+
+```
+Agent side (writes):                 Dashboard side (reads):
+  session_writer.py                    web_dashboard.py (Flask)
+    → traces/session_state.json    →     GET /api/state  → JSON
+    → traces/events.jsonl (append) →     GET /api/events → JSON list
+                                         GET /          → HTML page
+```
+
+Events written: `agent_spawn`, `agent_return`, `tool_call` (with safety tier),
+`compaction`, `budget_warning`, `budget_cap`.
+
+#### How to use
+
+```bash
+# Terminal 1 — run any demo or the REPL
+.venv/bin/python demo2_runner.py
+
+# Terminal 2 — start dashboard
+bash scripts/dashboard.sh
+# Open http://127.0.0.1:8787/
+```
+
+The page auto-refreshes every 1.5 s. No websockets, no CDN, one self-contained HTML file.
+
+#### Tests: 7 new tests in `test_web_dashboard.py`
+
+- `test_index_returns_html` — 200 + text/html
+- `test_index_contains_key_ui_elements` — Session, Agents, Event Stream, budget-bar
+- `test_api_state_empty` / `test_api_events_empty` — empty state returns `{}` / `[]`
+- `test_api_state_with_file` / `test_api_events_with_file` — data from monkeypatched files
+- `test_dashboard_does_not_crash_on_malformed_files` — corrupted JSON → `{}`, no crash
+
+---
+
 ## Day 4 — Packaging + Demonstrability
 
 ### Smoke test output (all 9 VG requirements green)
