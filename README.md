@@ -1,79 +1,164 @@
 # iTakt
 
-A terminal-based AI coding agent in the same category as Claude Code and OpenAI Codex but with a fundamentally different approach: tasks are decomposed and delegated to specialized sub-agents working in parallel, while an orchestrator/conductor keeps the orchestra playing to the same beat, i takt in Swedish, and synthesizes the results.
+A terminal-based multi-agent AI coding assistant. Tasks are decomposed and delegated to
+specialized sub-agents (planner, coder, reviewer, tester) running in parallel, while an
+orchestrator synthesizes the results. *I takt* — Swedish for "in time", as in an orchestra
+playing to the same beat.
 
-> The best way to handle complex coding tasks isn't a smarter model but it's a smarter *workflow*. And with dynamic model routing, multi-agent doesn't mean multi-dollar.
+> The best way to handle complex coding tasks isn't a smarter model but a smarter *workflow*.
+> And with dynamic model routing, multi-agent doesn't mean multi-dollar.
+
+---
+
+## Quick Start
+
+### Docker (recommended)
+
+```bash
+git clone https://github.com/Magnus-source/itakt.git
+cd itakt
+
+cp .env.example .env
+# Edit .env — add your Anthropic API key:
+#   ANTHROPIC_API_KEY=sk-ant-...
+
+docker compose up
+```
+
+The REPL starts. Type a task and press Enter.
+
+### Local (.venv)
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+cp .env.example .env
+# Edit .env with your API key
+
+.venv/bin/python -m itakt
+```
 
 ---
 
 ## Core Features
 
-> **Multi-agent orchestration** a main agent automatically spawns parallel sub-agents and synthesizes their results. Each agent has a role: planner, coder, reviewer, tester.
-> **Dynamic model routing** the orchestrator selects model based on task complexity. Simple file read or a straightforward pytest? Haiku. Architecture decisions or complex refactoring? Sonnet. Every token spent where it matters most.
-> **Context engineering** automatic chat compaction, tool-result trimming, and sliding context windows so agents never drown in their own history.
-> **Real-time token dashboard** live cost tracking per agent, budget warnings at configurable thresholds, and a hard cap that stops execution before your wallet bleeds.
-> **Safety-first tool execution** all bash commands and file operations are classified (safe/review/blocked) before execution, with allowlist/blocklist in config.
-> **Partial file editing** surgical edits via search/replace, not full-file rewrites.
-> **Bash execution** full shell access with safety classification.
-> **Docker-packaged** `docker compose up`, set your API key in `.env`, done. Runs on any machine.
-> **Fully configurable** model selection, token budgets, safety rules, all in a YAML config. No hardcoded values.
+| Feature | Description |
+|---|---|
+| Multi-agent orchestration | Orchestrator spawns parallel sub-agents; results synthesized |
+| Dynamic model routing | Sonnet for orchestrator, Haiku for sub-agents — configurable |
+| Context engineering | Auto chat compaction, tool-result trimming, `/compact` command |
+| Token dashboard | Live cost per agent, budget warnings at 70%/90%, hard cap |
+| Safety-first execution | All bash/file ops classified safe/review/blocked before running |
+| Partial file editing | Surgical search/replace with unified diff, not full rewrites |
+| Fully configurable | `itakt.yaml` for all settings, `.env` for secrets only |
 
-## Project Philosophy
+---
 
-This project follows a **spec-first development approach**, as advocated by the course methodology:
+## Demo Commands
 
-> *"Your real programming language is `.md` in this assignment. Not python."*
-
-The `/specs` directory contains the architecture documents, feature specifications, and test plans that serve as the blueprint for the entire system. The code is generated from these specs, the planning *is* the product.
-
-## Repository Structure
-
-```
-itakt/
-├── README.md                 # This file
-├── specs/                    # Architecture & feature specifications
-│   ├── ARCHITECTURE.md       # System architecture & component design
-│   ├── FEATURES.md           # Detailed feature specifications
-│   ├── CONTEXT-ENGINE.md     # Context engineering deep-dive
-│   ├── SAFETY.md             # Safety layer specification
-│   ├── CONFIG.md             # Configuration specification
-│   └── DEMO-PLAN.md          # Live demonstration script
-├── docs/                     # Supporting documentation
-│   └── PITCH.md              # Product pitch
-├── config/                   # Configuration templates
-│   └── itakt.example.yaml    # Example configuration file
-├── .env.example              # Environment variable template
-├── Dockerfile                # Container definition
-├── docker-compose.yml        # One-command deployment
-└── src/                      # Source code (generated from specs)
-    └── ...
-```
-
-## Quick Start (Coming Soon)
+All demos run without a TTY (non-interactive, auto-approve writes):
 
 ```bash
-# Clone the repo
-git clone https://github.com/Magnus-source/itakt.git
-cd itakt
+# Demo 1 — Simple task, single agent, read_file auto-approved
+.venv/bin/python demo1_runner.py
 
-# Configure
-cp .env.example .env
-# Edit .env with your API key(s)
+# Demo 2 — Multi-agent: coder + tester spawned in parallel
+.venv/bin/python demo2_runner.py
 
-# Run
-docker compose up
+# Demo 3 — Token dashboard + budget hard cap (hard_cap_tokens=1000)
+.venv/bin/python demo3_runner.py
+
+# Demo 4 — Blocked-command safety classifier + agent adaptation
+.venv/bin/python demo4_runner.py
+
+# Demo 5 — Chat compaction: before→after tokens, trace written, agent works after
+.venv/bin/python demo5_runner.py
 ```
+
+Interactive REPL (requires a TTY):
+
+```bash
+.venv/bin/python -m itakt
+# > Read the README.md and tell me what this project does
+# > /compact          (force context compaction)
+# > exit
+```
+
+---
+
+## VG Smoke Test
+
+Run all 9 VG requirements as live assertions:
+
+```bash
+.venv/bin/python scripts/smoke_test.py
+# Prints PASS/FAIL per VG.1-9
+# Writes traces/smoke_report.md
+```
+
+---
+
+## Configuration
+
+Copy `config/itakt.example.yaml` to `itakt.yaml` and customize. All settings live in the
+YAML; secrets (API keys) live exclusively in `.env`.
+
+Key config sections:
+
+```yaml
+models:
+  orchestrator:   { model: claude-sonnet-4-6 }   # complex decisions
+  sub_agents:     { model: claude-haiku-4-5-20251001 }  # fast execution
+
+budget:
+  hard_cap_tokens: 500000   # session stops here
+  hard_cap_usd: 5.00
+
+safety:
+  block_sudo: true
+  auto_approve_writes: false   # require approval for file writes
+```
+
+---
+
+## Architecture
+
+The specs directory is the source of truth — code was generated from these:
+
+```
+specs/
+  ARCHITECTURE.md      System design & component diagram
+  FEATURES.md          Feature specifications (F1-F9)
+  CONTEXT-ENGINE.md    Compaction + trimming + sub-agent compression
+  SAFETY.md            Three-tier classification (safe/review/blocked)
+  CONFIG.md            All configuration keys and defaults
+  DEMO-PLAN.md         Live demo script (Demos 1-5)
+```
+
+Component stack (bottom-up):
+
+```
+Config Manager   → loads itakt.yaml + .env, validates with pydantic
+Provider Client  → async Anthropic SDK wrapper, returns (content, usage)
+Token Monitor    → per-agent token + cost tracking, budget warnings
+Tool Registry    → read_file, list_directory, write_file, edit_file, bash
+Safety Layer     → classify → auto/approve/block; audit log
+Context Engine   → chat compaction (Layer 1), tool-result trimming (Layer 2)
+Sub-Agent Runner → clean context, role prompt, Haiku model, compress_result()
+Orchestrator     → asyncio.gather parallel spawning, yield_to_user, synthesis
+Token Dashboard  → Rich panel with budget bar + per-agent breakdown
+REPL             → prompt-toolkit async session, /compact command
+```
+
+---
 
 ## Status
 
-**Phase: Specification & Architecture**
-
-The project is currently in the planning phase. Specs are being finalized before code generation begins.
-
 | Phase | Status |
-|-------|--------|
-| Product pitch | Complete |
-| Architecture spec | In progress |
-| Feature specs | In progress |
-| Code generation | Upcoming |
-| Testing & demo prep | Upcoming |
+|---|---|
+| Specs & architecture | Complete |
+| Foundation (config, provider, tools, safety, agent loop, REPL) | Complete |
+| Orchestration (parallel sub-agents, model routing, synthesis) | Complete |
+| Context engine (compaction, trimming, dashboard, hard cap) | Complete |
+| Packaging (Docker, smoke test) | Complete |
