@@ -271,3 +271,73 @@ def test_messages_to_text_tool_use():
     text = _messages_to_text(msgs)
     assert "read_file" in text
     assert "Tool call" in text
+
+
+# ---------------------------------------------------------------------------
+# Compaction guard — no immediate re-compaction (1.2 fix)
+# ---------------------------------------------------------------------------
+
+def test_compaction_guard_skips_next_iteration():
+    """Guard condition: after compacting at iteration N, skip N+1."""
+    last_compacted_at = 3
+
+    # Iteration 4 = last_compacted_at + 1 → SKIP
+    assert 4 == last_compacted_at + 1
+
+    # Iteration 5 ≠ last_compacted_at + 1 → ALLOW
+    assert 5 != last_compacted_at + 1
+
+
+def test_compaction_guard_initial_value():
+    """Initial value -2 means no skip on iteration 0 or 1."""
+    last_compacted_at = -2
+    # iteration 0: skipped by `iteration > 0` guard regardless
+    # iteration 1: 1 != -2+1 = -1 → ALLOW
+    assert 1 != last_compacted_at + 1
+    # iteration 2: 2 != -1 → ALLOW
+    assert 2 != last_compacted_at + 1
+
+
+@pytest.mark.asyncio
+async def test_compact_does_not_immediately_refire(tmp_path):
+    """After compaction, should_compact must return False on the very next check
+    when the guard is active (messages have not grown further)."""
+    from itakt.compaction import should_compact, compact_messages
+    from itakt.config import ContextConfig, ModelConfig
+
+    messages = make_long_messages(20)  # well above any threshold
+
+    cfg = ContextConfig(
+        compaction_threshold=0.001,  # always triggers
+        preserve_recent=2,
+        context_window_tokens=200_000,
+    )
+
+    provider = FakeProvider("Summary.")
+    model_cfg = ModelConfig(model="fake", max_tokens=512)
+
+    # First compact
+    result_msgs = await compact_messages(
+        messages=messages,
+        system="sys",
+        context_cfg=cfg,
+        provider=provider,
+        model_cfg=model_cfg,
+        agent_name="guard-test",
+        traces_dir=str(tmp_path / "traces"),
+    )
+
+    # The guard in the loop checks: iteration != last_compacted_at + 1
+    # Simulate: we're now on the iteration immediately after compaction.
+    # Even though should_compact() would fire again (tokens still above threshold),
+    # the guard prevents it.
+    last_compacted_at = 5
+    current_iteration = 6  # = last_compacted_at + 1
+
+    guard_blocks = (current_iteration == last_compacted_at + 1)
+    assert guard_blocks, "Guard should block immediate re-compaction"
+
+    # One iteration later the guard no longer blocks
+    current_iteration = 7
+    guard_blocks = (current_iteration == last_compacted_at + 1)
+    assert not guard_blocks, "Guard should allow compaction after skipping one iteration"

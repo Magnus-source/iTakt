@@ -105,6 +105,7 @@ async def run_sub_agent(
     agent_output = 0
     final_message = "(sub-agent produced no output)"
     status = "success"
+    last_compacted_at: int = -2
 
     for iteration in range(config.agents.max_iterations):
         if monitor.is_over_budget():
@@ -112,8 +113,11 @@ async def run_sub_agent(
             status = "budget_cap"
             break
 
-        # Auto-compact when sub-agent history gets long
-        if iteration > 0 and should_compact(messages, config.context):
+        # Auto-compact when sub-agent history gets long;
+        # never re-compact the iteration immediately after a compaction.
+        if (iteration > 0
+                and iteration != last_compacted_at + 1
+                and should_compact(messages, config.context)):
             messages = await compact_messages(
                 messages=messages,
                 system=system,
@@ -123,6 +127,7 @@ async def run_sub_agent(
                 agent_name=agent_name,
                 traces_dir="traces",
             )
+            last_compacted_at = iteration
 
         response = await provider.complete(
             system=system,

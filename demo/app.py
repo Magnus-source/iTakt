@@ -12,7 +12,7 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
+    return jsonify({"status": "ok", "timestamp": datetime.now(datetime.UTC).isoformat()})
 
 
 if __name__ == "__main__":

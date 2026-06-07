@@ -44,6 +44,18 @@ _BLOCKED_BASH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Any command that contains a destructive operation ANYWHERE — even when wrapped
+# inside find -exec, xargs, &&, ; chains, or pipes — must never be auto-SAFE.
+# Catastrophic forms are BLOCKED above; scoped destructive ops land here → REVIEW.
+_DESTRUCTIVE_ANYWHERE_RE = re.compile(
+    r"("
+    r"\brm\s+-[a-zA-Z]*r"   # rm -r, rm -rf, rm -Rf, rm -fr … with recursive flag
+    r"|-exec\s+rm\b"        # find -exec rm (any variant)
+    r"|\bxargs\s+rm\b"      # … | xargs rm
+    r")",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # SafetyLayer
@@ -110,11 +122,17 @@ class SafetyLayer:
                 cls = Classification(entry.classification)
                 return cls, f"config allowlist: {entry.pattern}"
 
-        # 5. Built-in safe patterns
+        # 5. Destructive-anywhere guard — must precede the safe-prefix check so that
+        #    commands like `find ... -exec rm -rf {} +` or `ls && rm -rf dir` are
+        #    never auto-approved as SAFE just because they start with a safe prefix.
+        if _DESTRUCTIVE_ANYWHERE_RE.search(command):
+            return Classification.REVIEW, "contains destructive operation (requires approval)"
+
+        # 6. Built-in safe patterns (safe prefix AND no destructive content above)
         if _SAFE_BASH_RE.match(command.strip()):
             return Classification.SAFE, "matches built-in safe pattern"
 
-        # 6. Default bash → review
+        # 7. Default bash → review
         return Classification.REVIEW, "bash default"
 
     # ------------------------------------------------------------------

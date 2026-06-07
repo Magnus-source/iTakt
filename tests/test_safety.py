@@ -175,3 +175,49 @@ def test_blocklist_takes_priority_over_allowlist():
     s = make_safety(allowlist=[allow], blocklist=[block])
     cls, _ = s.classify("bash", {"command": "danger"})
     assert cls == Classification.BLOCKED
+
+
+# ---------------------------------------------------------------------------
+# Defense-in-depth: destructive ops inside safe-prefixed commands (1.1 fix)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "find . -name x -exec rm -rf {} +",
+    "find . -type d -name __pycache__ -exec rm -rf {} +",
+    "find . -name '*.pyc' -exec rm -r {} ;",
+    "ls && rm -rf /tmp/x",
+    "git ls-files | xargs rm -rf",
+    "echo hi && rm -rf localdir",
+])
+def test_destructive_in_safe_wrapper_not_safe(cmd):
+    """Commands containing rm -rf/-r anywhere must NOT be auto-SAFE."""
+    s = make_safety()
+    cls, reason = s.classify("bash", {"command": cmd})
+    assert cls != Classification.SAFE, (
+        f"Expected NOT SAFE (got {cls}) for: {cmd!r}\nreason: {reason}"
+    )
+
+
+@pytest.mark.parametrize("cmd", [
+    "find . -name '*.py'",
+    "find . -type f -name '*.txt' -print",
+    "find . -maxdepth 2 -name conftest.py",
+])
+def test_find_without_destructive_exec_still_safe(cmd):
+    """find with no destructive -exec must still be SAFE."""
+    s = make_safety()
+    cls, _ = s.classify("bash", {"command": cmd})
+    assert cls == Classification.SAFE, f"Expected SAFE for: {cmd!r}"
+
+
+def test_destructive_in_wrapper_via_xargs_is_review_not_safe():
+    s = make_safety()
+    cls, _ = s.classify("bash", {"command": "git ls-files | xargs rm -rf"})
+    assert cls != Classification.SAFE
+
+
+def test_rm_rf_absolute_still_blocked():
+    """The BLOCKED tier must still catch rm -rf on absolute paths."""
+    s = make_safety()
+    cls, _ = s.classify("bash", {"command": "find . -exec rm -rf / +"})
+    assert cls == Classification.BLOCKED

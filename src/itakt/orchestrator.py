@@ -94,12 +94,17 @@ async def run_orchestrator(
 
     print(f"[agent] orchestrator ({model_cfg.model}) started")
 
+    last_compacted_at: int = -2  # never re-compact the iteration immediately after a compaction
+
     for iteration in range(config.agents.max_iterations):
         if check_and_print_warnings(monitor):
             return budget_summary(monitor)
 
-        # Auto-compact when messages history exceeds threshold
-        if iteration > 0 and should_compact(messages, config.context):
+        # Auto-compact when messages history exceeds threshold,
+        # but never on the iteration immediately following a compaction.
+        if (iteration > 0
+                and iteration != last_compacted_at + 1
+                and should_compact(messages, config.context)):
             messages = await compact_messages(
                 messages=messages,
                 system=ORCHESTRATOR_SYSTEM,
@@ -109,6 +114,7 @@ async def run_orchestrator(
                 agent_name=agent_name,
                 traces_dir="traces",
             )
+            last_compacted_at = iteration
 
         response = await provider.complete(
             system=ORCHESTRATOR_SYSTEM,
