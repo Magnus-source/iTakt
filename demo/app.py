@@ -1,5 +1,5 @@
 """Minimal Flask demo app — iTakt Day 2 demo target."""
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -12,7 +12,7 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "timestamp": datetime.now(datetime.UTC).isoformat()})
+    return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
 
 
 if __name__ == "__main__":
