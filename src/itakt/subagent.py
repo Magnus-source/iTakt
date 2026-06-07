@@ -9,6 +9,7 @@ from .config import Config
 from .monitor import TokenMonitor
 from .provider import AnthropicProvider
 from .safety import SafetyLayer
+from .session_writer import event_agent_spawn, event_agent_return, event_tool_call
 from .tools import TOOL_SCHEMAS, YIELD_TO_USER_SCHEMA
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,10 @@ async def run_sub_agent(
 
     elapsed = time.monotonic() - t0
     print(f"[agent] spawn {agent_name} ({model_cfg.model}) t+{elapsed:.1f}s")
+    try:
+        event_agent_spawn(agent_name, model_cfg.model, role, elapsed)
+    except Exception:
+        pass
 
     system = ROLE_PROMPTS.get(role, ROLE_PROMPTS["coder"])
 
@@ -176,12 +181,18 @@ async def run_sub_agent(
             break
 
     elapsed = time.monotonic() - t0
+    total_tok = agent_input + agent_output
+    cost_est = total_tok / 1_000_000 * 0.80  # haiku estimate
     print(
         f"[agent] return {agent_name}"
-        f" tokens={agent_input + agent_output}"
-        f" usd=${(agent_input + agent_output) / 1_000_000 * 0.80:.4f}"  # haiku estimate
+        f" tokens={total_tok}"
+        f" usd=${cost_est:.4f}"
         f" t+{elapsed:.1f}s"
     )
+    try:
+        event_agent_return(agent_name, total_tok, cost_est, elapsed)
+    except Exception:
+        pass
 
     return compress_result(
         role=role,

@@ -6,12 +6,17 @@ import time
 from collections import defaultdict
 
 from .agent import _content_to_dicts
-from .compaction import compact_messages, should_compact
+from .compaction import compact_messages, estimate_tokens, should_compact
 from .config import Config
 from .dashboard import check_and_print_warnings, budget_summary
 from .monitor import TokenMonitor
 from .provider import AnthropicProvider
 from .safety import SafetyLayer
+from .session_writer import (
+    event_agent_spawn, event_agent_return, event_compaction,
+    event_budget_cap, event_budget_warning, event_tool_call,
+    record_session_state, reset_session,
+)
 from .subagent import run_sub_agent
 from .tools import TOOL_SCHEMAS, YIELD_TO_USER_SCHEMA
 
@@ -93,11 +98,20 @@ async def run_orchestrator(
     t0 = time.monotonic()
 
     print(f"[agent] orchestrator ({model_cfg.model}) started")
+    try:
+        reset_session()
+        event_agent_spawn(agent_name, model_cfg.model, "orchestrator", 0.0)
+    except Exception:
+        pass
 
     last_compacted_at: int = -2  # never re-compact the iteration immediately after a compaction
 
     for iteration in range(config.agents.max_iterations):
         if check_and_print_warnings(monitor):
+            try:
+                event_budget_cap(monitor.total_tokens(), monitor.total_cost())
+            except Exception:
+                pass
             return budget_summary(monitor)
 
         # Auto-compact when messages history exceeds threshold,
@@ -105,6 +119,7 @@ async def run_orchestrator(
         if (iteration > 0
                 and iteration != last_compacted_at + 1
                 and should_compact(messages, config.context)):
+            before_tok = estimate_tokens(messages)
             messages = await compact_messages(
                 messages=messages,
                 system=ORCHESTRATOR_SYSTEM,
@@ -115,6 +130,10 @@ async def run_orchestrator(
                 traces_dir="traces",
             )
             last_compacted_at = iteration
+            try:
+                event_compaction(agent_name, before_tok, estimate_tokens(messages), "traces/")
+            except Exception:
+                pass
 
         response = await provider.complete(
             system=ORCHESTRATOR_SYSTEM,
@@ -130,6 +149,19 @@ async def run_orchestrator(
             provider=model_cfg.provider,
             model=model_cfg.model,
         )
+        try:
+            record_session_state(
+                total_tokens=monitor.total_tokens(),
+                total_cost=monitor.total_cost(),
+                budget_tokens=monitor._budget.hard_cap_tokens,
+                budget_usd=monitor._budget.hard_cap_usd,
+                agents={k: {"input": v.input_tokens, "output": v.output_tokens,
+                            "cost": v.cost_usd, "calls": v.calls}
+                        for k, v in monitor.agents_usage().items()},
+                steps=monitor._steps,
+            )
+        except Exception:
+            pass
 
         messages.append({"role": "assistant", "content": _content_to_dicts(response.content)})
 
@@ -155,7 +187,15 @@ async def run_orchestrator(
 
         # Regular tools: sequential sync execution
         for tc in regular_calls:
-            results[tc.id] = safety.execute(tc.name, tc.input, agent_name)
+            res = safety.execute(tc.name, tc.input, agent_name)
+            results[tc.id] = res
+            try:
+                cls_val = safety.classify(tc.name, tc.input)[0].value
+                outcome = "BLOCKED" if res.startswith("[BLOCKED]") else "EXECUTED"
+                event_tool_call(agent_name, tc.name, cls_val, outcome,
+                                str(tc.input)[:60])
+            except Exception:
+                pass
 
         # spawn_sub_agent: parallel async execution
         if spawn_calls:

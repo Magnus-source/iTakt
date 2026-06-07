@@ -55,6 +55,28 @@ cp .env.example .env
 
 ---
 
+## Web Dashboard (optional)
+
+A read-only local dashboard that visualises a live iTakt session in your browser.
+It reads `traces/session_state.json` and `traces/events.jsonl` written by the agent —
+entirely additive, never affects agent behaviour.
+
+```bash
+# In a second terminal while the agent is running:
+bash scripts/dashboard.sh          # default port 8787
+# or:
+.venv/bin/python -m itakt.web_dashboard --port 8787
+```
+
+Open **http://127.0.0.1:8787/** to see:
+- Session totals (tokens, cost, budget bar)
+- Per-agent breakdown (orchestrator + sub-agents)
+- Live event stream (spawns, tool calls + safety tier, compaction events)
+
+Auto-refreshes every 1.5 s with plain JS polling — no websockets, no CDNs.
+
+---
+
 ## Demo Commands
 
 All demos run without a TTY (non-interactive, auto-approve writes):
