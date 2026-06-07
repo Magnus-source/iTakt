@@ -2,6 +2,74 @@
 
 ---
 
+## Day 4 — Packaging + Demonstrability
+
+### Smoke test output (all 9 VG requirements green)
+
+```
+$ .venv/bin/python scripts/smoke_test.py
+
+iTakt VG Smoke Test   run=20260607_090941
+======================================================================
+PASS VG.1 parallel_sub_agents         spawns=['coder-1', 'tester-1'] Δt=0.00s<1.5s=True
+PASS VG.2 context_compaction          tokens 1400→388 (72% reduced) trace=compaction_smoke-vg2_...json
+PASS VG.3 cost_monitoring_hard_cap    cap=500 used=1561 stopped=yes
+PASS VG.4 harmful_tool_call_protection 11 destructive commands all BLOCKED before execution
+PASS VG.5 bash_execution              echo captured: 'Exit code: 0\nstdout:\nsmoke_vg5_sentinel_42'
+PASS VG.6 partial_file_editing        foo()→999 ✓=True  bar()/baz() intact ✓=True  diff=True
+PASS VG.7 deployable_packaging        Dockerfile✓ docker-compose✓ yaml_valid✓ build_unverified(no_docker_daemon)
+PASS VG.8 config_env_split            .env.example=✓ gitignored=✓ no_key_in_traces=✓
+PASS VG.9 yield_not_guess             steps=1 not_maxiter=True answer='2 + 2 equals 4.'
+======================================================================
+9 passed / 0 failed
+
+Report → traces/smoke_report.md
+```
+
+### Docker run command
+
+```bash
+# Build and run interactively:
+docker compose up
+
+# Or build only:
+docker build -t itakt .
+
+# Run container with API key and config:
+docker run -it --env-file .env \
+  -v $(pwd)/itakt.yaml:/app/itakt.yaml:ro \
+  -v $(pwd)/traces:/app/traces \
+  itakt
+```
+
+### pytest all green (Days 1-4)
+
+```
+$ .venv/bin/python -m pytest tests/ -q
+118 passed in 1.99s
+```
+
+### Day 4 Components
+
+| Component | File | Purpose |
+|---|---|---|
+| VG smoke test | `scripts/smoke_test.py` | Exercises VG.1-9 with real API calls + static checks |
+| Shell wrapper | `scripts/smoke.sh` | `bash scripts/smoke.sh` entry point |
+| Dockerfile | `Dockerfile` | Python 3.11-slim, installs via pyproject.toml |
+| docker-compose | `docker-compose.yml` | Mounts itakt.yaml + traces, reads .env |
+| README | `README.md` | Quickstart (Docker + local), demo commands, architecture |
+| pyproject.toml | `pyproject.toml` | Added flask + httpx[socks] as declared deps |
+
+### VG.8 security check
+
+```bash
+$ grep -r "sk-ant-api03-" traces/    # → nothing (CLEAN)
+```
+
+API key never written to any trace file.
+
+---
+
 ## Day 3 — Context Engine + Token Dashboard + Safety Demo
 
 ### Demo 3 Output (budget cap)
