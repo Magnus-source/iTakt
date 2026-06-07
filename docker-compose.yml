@@ -1,0 +1,11 @@
+services:
+  itakt:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./itakt.yaml:/app/itakt.yaml:ro
+      - ./demo:/app/demo
+      - ./traces:/app/traces
+    stdin_open: true
+    tty: true

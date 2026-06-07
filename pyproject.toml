@@ -12,6 +12,8 @@ dependencies = [
     "prompt-toolkit>=3",
     "pyyaml>=6",
     "pydantic>=2",
+    "flask>=3",
+    "httpx[socks]>=0.27",
 ]
 
 [tool.setuptools.packages.find]
