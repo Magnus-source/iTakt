@@ -79,32 +79,58 @@ ORCHESTRATOR_TOOLS = TOOL_SCHEMAS + [SPAWN_SUB_AGENT_SCHEMA, YIELD_TO_USER_SCHEM
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator loop
+# Message-sequence helper
 # ---------------------------------------------------------------------------
 
-async def run_orchestrator(
-    task: str,
+def _normalize_for_continuation(messages: list[dict]) -> None:
+    """Ensure the last assistant message is safe to continue after.
+
+    When the loop exits via ``yield_to_user``, the final assistant message
+    contains a ``tool_use`` block.  The Anthropic API requires a ``tool_result``
+    before the next user message, so we convert the ``yield_to_user`` block into
+    a plain text block in-place.  All other content blocks are left untouched.
+    """
+    if not messages or messages[-1].get("role") != "assistant":
+        return
+    content = messages[-1].get("content", [])
+    if not isinstance(content, list):
+        return
+    new_content = []
+    for block in content:
+        if (isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == "yield_to_user"):
+            msg = block.get("input", {}).get("message", "")
+            if msg:
+                new_content.append({"type": "text", "text": msg})
+            # else: drop the empty block — the text was already returned as reply
+        else:
+            new_content.append(block)
+    messages[-1]["content"] = new_content
+
+
+# ---------------------------------------------------------------------------
+# Core loop (extracted so ConversationAgent can reuse it)
+# ---------------------------------------------------------------------------
+
+async def _orchestrator_loop(
+    messages: list[dict],
     config: Config,
     provider: AnthropicProvider,
     monitor: TokenMonitor,
     safety: SafetyLayer,
-) -> str:
-    """Orchestrator loop: handles spawn_sub_agent calls in parallel batches."""
-    messages: list[dict] = [{"role": "user", "content": task}]
+    semaphore: asyncio.Semaphore,
+    role_counters: dict[str, int],
+    t0: float,
+    last_compacted_at: int = -2,
+) -> tuple[str, int]:
+    """Run the decision loop on *messages* (mutated in-place).
+
+    Returns ``(reply_text, last_compacted_at)`` so the caller can persist
+    ``last_compacted_at`` across turns.
+    """
     model_cfg = config.models.orchestrator
     agent_name = "orchestrator"
-    semaphore = asyncio.Semaphore(config.agents.max_parallel)
-    role_counters: dict[str, int] = defaultdict(int)
-    t0 = time.monotonic()
-
-    print(f"[agent] orchestrator ({model_cfg.model}) started")
-    try:
-        reset_session()
-        event_agent_spawn(agent_name, model_cfg.model, "orchestrator", 0.0)
-    except Exception:
-        pass
-
-    last_compacted_at: int = -2  # never re-compact the iteration immediately after a compaction
 
     for iteration in range(config.agents.max_iterations):
         if check_and_print_warnings(monitor):
@@ -112,7 +138,7 @@ async def run_orchestrator(
                 event_budget_cap(monitor.total_tokens(), monitor.total_cost())
             except Exception:
                 pass
-            return budget_summary(monitor)
+            return budget_summary(monitor), last_compacted_at
 
         # Auto-compact when messages history exceeds threshold,
         # but never on the iteration immediately following a compaction.
@@ -120,7 +146,7 @@ async def run_orchestrator(
                 and iteration != last_compacted_at + 1
                 and should_compact(messages, config.context)):
             before_tok = estimate_tokens(messages)
-            messages = await compact_messages(
+            messages[:] = await compact_messages(
                 messages=messages,
                 system=ORCHESTRATOR_SYSTEM,
                 context_cfg=config.context,
@@ -169,13 +195,13 @@ async def run_orchestrator(
         if response.stop_reason != "tool_use":
             for block in response.content:
                 if block.type == "text" and block.text.strip():
-                    return block.text
-            return "(orchestrator finished with no text)"
+                    return block.text, last_compacted_at
+            return "(orchestrator finished with no text)", last_compacted_at
 
         # Scan for yield_to_user (always handled first)
         for block in response.content:
             if block.type == "tool_use" and block.name == "yield_to_user":
-                return block.input.get("message", "(no message)")
+                return block.input.get("message", "(no message)"), last_compacted_at
 
         # Partition all tool calls
         tool_calls = [b for b in response.content if b.type == "tool_use"]
@@ -235,4 +261,112 @@ async def run_orchestrator(
         ]
         messages.append({"role": "user", "content": ordered})
 
-    return "[iTakt] Max iterations reached."
+    return "[iTakt] Max iterations reached.", last_compacted_at
+
+
+# ---------------------------------------------------------------------------
+# Public function API — reset-per-task (unchanged external behaviour)
+# ---------------------------------------------------------------------------
+
+async def run_orchestrator(
+    task: str,
+    config: Config,
+    provider: AnthropicProvider,
+    monitor: TokenMonitor,
+    safety: SafetyLayer,
+) -> str:
+    """Fresh-per-task orchestrator run.  Demo runners and smoke test use this."""
+    messages: list[dict] = [{"role": "user", "content": task}]
+    model_cfg = config.models.orchestrator
+    semaphore = asyncio.Semaphore(config.agents.max_parallel)
+    role_counters: dict[str, int] = defaultdict(int)
+    t0 = time.monotonic()
+
+    print(f"[agent] orchestrator ({model_cfg.model}) started")
+    try:
+        reset_session()
+        event_agent_spawn("orchestrator", model_cfg.model, "orchestrator", 0.0)
+    except Exception:
+        pass
+
+    reply, _ = await _orchestrator_loop(
+        messages, config, provider, monitor, safety,
+        semaphore, role_counters, t0,
+    )
+    return reply
+
+
+# ---------------------------------------------------------------------------
+# Stateful class API — persistent history across REPL turns
+# ---------------------------------------------------------------------------
+
+class ConversationAgent:
+    """Maintains message history across multiple REPL turns.
+
+    ``run_turn(user_input)`` appends the user message to the existing history
+    and runs the decision loop, so the agent remembers previous exchanges.
+
+    ``run_orchestrator`` (the function above) always resets per task and is
+    unaffected by this class.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        provider: AnthropicProvider,
+        monitor: TokenMonitor,
+        safety: SafetyLayer,
+    ) -> None:
+        self._config = config
+        self._provider = provider
+        self._monitor = monitor
+        self._safety = safety
+        self.messages: list[dict] = []
+        self._semaphore = asyncio.Semaphore(config.agents.max_parallel)
+        self._role_counters: dict[str, int] = defaultdict(int)
+        self._t0 = time.monotonic()
+        self._last_compacted_at: int = -2
+        self._started: bool = False
+
+    async def run_turn(self, user_input: str) -> str:
+        """Append *user_input* to history, run one turn, return the reply.
+
+        On the first call, initialises the session (``reset_session`` +
+        ``event_agent_spawn``).  Subsequent calls reuse the same history.
+        """
+        # First-turn session initialisation
+        if not self._started:
+            self._started = True
+            model = self._config.models.orchestrator.model
+            print(f"[agent] orchestrator ({model}) started")
+            try:
+                reset_session()
+                event_agent_spawn("orchestrator", model, "orchestrator", 0.0)
+            except Exception:
+                pass
+
+        self.messages.append({"role": "user", "content": user_input})
+
+        reply, self._last_compacted_at = await _orchestrator_loop(
+            self.messages,
+            self._config, self._provider, self._monitor, self._safety,
+            self._semaphore, self._role_counters, self._t0,
+            self._last_compacted_at,
+        )
+
+        # If the loop returned via yield_to_user, the last assistant message
+        # contains a tool_use block.  Convert it to text so the next user
+        # message is always a valid continuation (Anthropic API requires
+        # tool_result before a new user turn, not a bare user message).
+        _normalize_for_continuation(self.messages)
+
+        # Edge case: budget_cap fires before any API call (messages still ends
+        # with the user message we just appended).  Add the reply as an
+        # assistant message so the sequence stays valid.
+        if self.messages and self.messages[-1].get("role") != "assistant":
+            self.messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": reply}],
+            })
+
+        return reply

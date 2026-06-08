@@ -11,7 +11,7 @@ from .compaction import compact_messages, estimate_tokens
 from .config import load_config
 from .dashboard import render_dashboard
 from .monitor import TokenMonitor
-from .orchestrator import run_orchestrator, ORCHESTRATOR_SYSTEM
+from .orchestrator import ConversationAgent, ORCHESTRATOR_SYSTEM
 from .provider import AnthropicProvider
 from .safety import SafetyLayer
 from .tools import ToolRegistry
@@ -42,8 +42,9 @@ async def run_repl() -> None:
         audit_log_path=config.logging.file.replace(".log", "_audit.log"),
     )
 
-    # Session-level exchange log — used by /compact to demonstrate compaction
-    session_exchanges: list[dict] = []
+    # Single agent instance that persists across the whole REPL session.
+    # Its .messages list accumulates every turn so the agent remembers context.
+    agent = ConversationAgent(config, provider, monitor, safety)
 
     print(BANNER)
     print()
@@ -63,15 +64,15 @@ async def run_repl() -> None:
             print("[iTakt] Goodbye.")
             break
 
-        # /compact command — force compact the session exchange log
+        # /compact command — compact the live conversation history
         if raw.lower() == "/compact":
-            if not session_exchanges:
+            if not agent.messages:
                 print("[context] No session history to compact yet.")
                 continue
-            before = estimate_tokens(session_exchanges)
-            print(f"[context] Forcing compaction of session log ({before:,} est. tokens)…")
-            session_exchanges = await compact_messages(
-                messages=session_exchanges,
+            before = estimate_tokens(agent.messages)
+            print(f"[context] Forcing compaction of session history ({before:,} est. tokens)…")
+            agent.messages = await compact_messages(
+                messages=agent.messages,
                 system=ORCHESTRATOR_SYSTEM,
                 context_cfg=config.context,
                 provider=provider,
@@ -79,28 +80,16 @@ async def run_repl() -> None:
                 agent_name="repl-session",
                 traces_dir="traces",
             )
-            after = estimate_tokens(session_exchanges)
-            print(f"[context] Session log: {before:,} → {after:,} tokens")
+            after = estimate_tokens(agent.messages)
+            print(f"[context] History: {before:,} → {after:,} tokens")
             print(f"  {monitor.status_line()}")
             continue
 
         print()
-        result = await run_orchestrator(
-            task=raw,
-            config=config,
-            provider=provider,
-            monitor=monitor,
-            safety=safety,
-        )
+        result = await agent.run_turn(raw)
         print()
         print(result)
         print()
-
-        # Accumulate session history for /compact
-        session_exchanges.append({"role": "user", "content": raw})
-        session_exchanges.append(
-            {"role": "assistant", "content": [{"type": "text", "text": result[:500]}]}
-        )
 
         render_dashboard(monitor)
         print()

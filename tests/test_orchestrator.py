@@ -200,3 +200,146 @@ def test_all_roles_have_prompts():
 def test_role_prompts_mention_yield_to_user():
     for role, prompt in ROLE_PROMPTS.items():
         assert "yield_to_user" in prompt, f"{role} prompt missing yield_to_user instruction"
+
+
+# ---------------------------------------------------------------------------
+# ConversationAgent.run_turn — multi-turn memory (no real API calls)
+# ---------------------------------------------------------------------------
+
+class _MockUsage:
+    input_tokens = 10
+    output_tokens = 5
+
+
+class _MockTextBlock:
+    type = "text"
+    text = "Mock reply."
+
+
+class _MockEndTurnResponse:
+    content = [_MockTextBlock()]
+    stop_reason = "end_turn"
+    usage = _MockUsage()
+
+
+class _MockProvider:
+    """Returns a simple end_turn text response every time."""
+    async def complete(self, system, messages, tools, model_cfg):
+        return _MockEndTurnResponse()
+
+
+@pytest.mark.asyncio
+async def test_run_turn_preserves_history():
+    """Two sequential run_turn calls must carry history from the first turn."""
+    from itakt.config import SafetyConfig
+    from itakt.monitor import TokenMonitor
+    from itakt.orchestrator import ConversationAgent
+    from itakt.safety import SafetyLayer
+    from itakt.tools import ToolRegistry
+
+    config = Config()
+    monitor = TokenMonitor(budget=config.budget)
+    registry = ToolRegistry()
+    safety = SafetyLayer(SafetyConfig(), registry, audit_log_path="/dev/null")
+
+    agent = ConversationAgent(config, _MockProvider(), monitor, safety)
+
+    await agent.run_turn("What is the capital of France?")
+    await agent.run_turn("And what language do they speak there?")
+
+    # Both user inputs must be present in the accumulated history
+    user_texts = [
+        m["content"]
+        for m in agent.messages
+        if m["role"] == "user" and isinstance(m["content"], str)
+    ]
+    assert "What is the capital of France?" in user_texts, (
+        f"First turn not found in history: {user_texts}"
+    )
+    assert "And what language do they speak there?" in user_texts, (
+        f"Second turn not found in history: {user_texts}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_turn_messages_alternate_roles():
+    """After two turns the message sequence must alternate user/assistant."""
+    from itakt.config import SafetyConfig
+    from itakt.monitor import TokenMonitor
+    from itakt.orchestrator import ConversationAgent
+    from itakt.safety import SafetyLayer
+    from itakt.tools import ToolRegistry
+
+    config = Config()
+    monitor = TokenMonitor(budget=config.budget)
+    safety = SafetyLayer(SafetyConfig(), ToolRegistry(), audit_log_path="/dev/null")
+
+    agent = ConversationAgent(config, _MockProvider(), monitor, safety)
+
+    await agent.run_turn("Turn one")
+    await agent.run_turn("Turn two")
+
+    roles = [m["role"] for m in agent.messages]
+    for i in range(len(roles) - 1):
+        assert roles[i] != roles[i + 1], (
+            f"Adjacent same-role messages at index {i}: {roles}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_turn_returns_reply():
+    """run_turn must return the mock provider's text."""
+    from itakt.config import SafetyConfig
+    from itakt.monitor import TokenMonitor
+    from itakt.orchestrator import ConversationAgent
+    from itakt.safety import SafetyLayer
+    from itakt.tools import ToolRegistry
+
+    config = Config()
+    monitor = TokenMonitor(budget=config.budget)
+    safety = SafetyLayer(SafetyConfig(), ToolRegistry(), audit_log_path="/dev/null")
+
+    agent = ConversationAgent(config, _MockProvider(), monitor, safety)
+    reply = await agent.run_turn("Hello")
+    assert reply == "Mock reply."
+
+
+# ---------------------------------------------------------------------------
+# _normalize_for_continuation
+# ---------------------------------------------------------------------------
+
+def test_normalize_converts_yield_to_user_to_text():
+    from itakt.orchestrator import _normalize_for_continuation
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu1", "name": "yield_to_user",
+             "input": {"message": "Here is my answer."}}
+        ]},
+    ]
+    _normalize_for_continuation(messages)
+
+    last = messages[-1]
+    assert last["role"] == "assistant"
+    assert last["content"][0]["type"] == "text"
+    assert last["content"][0]["text"] == "Here is my answer."
+
+
+def test_normalize_leaves_text_blocks_untouched():
+    from itakt.orchestrator import _normalize_for_continuation
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Already text."}]},
+    ]
+    _normalize_for_continuation(messages)
+    assert messages[-1]["content"][0]["text"] == "Already text."
+
+
+def test_normalize_noop_when_last_is_user():
+    from itakt.orchestrator import _normalize_for_continuation
+
+    messages = [{"role": "user", "content": "not assistant"}]
+    _normalize_for_continuation(messages)  # must not raise
+    assert messages[-1]["role"] == "user"
