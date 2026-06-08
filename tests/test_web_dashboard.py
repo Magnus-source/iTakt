@@ -26,7 +26,7 @@ def test_index_contains_key_ui_elements(client):
     resp = client.get("/")
     html = resp.data.decode()
     assert "Session" in html
-    assert "Agents" in html
+    assert "Agent Hierarchy" in html
     assert "Event Stream" in html
     assert "budget-bar" in html
 
