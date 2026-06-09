@@ -343,3 +343,216 @@ def test_normalize_noop_when_last_is_user():
     messages = [{"role": "user", "content": "not assistant"}]
     _normalize_for_continuation(messages)  # must not raise
     assert messages[-1]["role"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn history validity — tool_use ⇄ tool_result pairing
+# (regression tests for the two REPL run_turn crashes)
+# ---------------------------------------------------------------------------
+
+import copy
+
+
+class _SBlock:
+    """Lightweight stand-in for an SDK content block."""
+    def __init__(self, type, text=None, id=None, name=None, input=None):
+        self.type = type
+        self.text = text
+        self.id = id
+        self.name = name
+        self.input = input
+
+
+class _SResp:
+    def __init__(self, content, stop_reason):
+        self.content = content
+        self.stop_reason = stop_reason
+        self.usage = _MockUsage()
+
+
+def _is_orchestrator_call(tools) -> bool:
+    return any(t.get("name") == "spawn_sub_agent" for t in tools)
+
+
+def _assert_valid_sequence(messages):
+    """Self-contained validator (independent of the production fix) so these
+    regression tests genuinely fail on the buggy runtime: every tool_use is
+    answered by a tool_result in the next message, every tool_result answers a
+    tool_use in the previous message, and the history never ends on an
+    unanswered tool_use."""
+    def use_ids(m):
+        c = m.get("content")
+        return [b["id"] for b in c
+                if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b] \
+            if isinstance(c, list) else []
+
+    def result_ids(m):
+        c = m.get("content")
+        return {b.get("tool_use_id") for b in c
+                if isinstance(b, dict) and b.get("type") == "tool_result"} \
+            if isinstance(c, list) else set()
+
+    n = len(messages)
+    for i, msg in enumerate(messages):
+        uids = use_ids(msg)
+        if uids:
+            assert i + 1 < n, f"history ends on unanswered tool_use {uids}"
+            answered = result_ids(messages[i + 1])
+            for tid in uids:
+                assert tid in answered, f"tool_use {tid} has no matching tool_result"
+        rids = result_ids(msg)
+        if rids:
+            prev = set(use_ids(messages[i - 1])) if i > 0 else set()
+            for rid in rids:
+                assert rid in prev, f"orphan tool_result {rid}"
+
+
+class _ValidatingProvider:
+    """Scripted provider that validates every orchestrator history it receives.
+
+    * compaction calls (``tools == []``) → return a plain summary text.
+    * orchestrator calls (tools include ``spawn_sub_agent``) → assert the
+      messages form a valid Anthropic sequence, then return a scripted response.
+    * sub-agent calls → immediately yield so spawned agents finish fast.
+    """
+
+    def __init__(self, orchestrator_script):
+        self._script = list(orchestrator_script)
+        self.orch_calls = 0
+        self.seen: list[list[dict]] = []
+
+    async def complete(self, system, messages, tools, model_cfg):
+        if not tools:  # compaction summary request
+            return _SResp([_SBlock("text", text="A concise summary.")], "end_turn")
+
+        if _is_orchestrator_call(tools):
+            snapshot = copy.deepcopy(messages)
+            self.seen.append(snapshot)
+            # This is the assertion the regression guards: the history sent to
+            # the provider must be a valid tool_use/tool_result sequence.
+            _assert_valid_sequence(snapshot)
+            resp = self._script[min(self.orch_calls, len(self._script) - 1)]
+            self.orch_calls += 1
+            return resp
+
+        # sub-agent call → yield immediately
+        return _SResp(
+            [_SBlock("tool_use", id="sub_yield", name="yield_to_user",
+                     input={"message": "sub agent done"})],
+            "tool_use",
+        )
+
+
+def _make_agent(provider):
+    from itakt.config import SafetyConfig
+    from itakt.monitor import TokenMonitor
+    from itakt.orchestrator import ConversationAgent
+    from itakt.safety import SafetyLayer
+    from itakt.tools import ToolRegistry
+
+    config = Config()
+    monitor = TokenMonitor(budget=config.budget)
+    safety = SafetyLayer(SafetyConfig(), ToolRegistry(), audit_log_path="/dev/null")
+    return ConversationAgent(config, provider, monitor, safety)
+
+
+@pytest.mark.asyncio
+async def test_valid_history_after_parallel_spawn_turn():
+    """Bug A: an assistant turn with parallel spawn_sub_agent calls (here also
+    emitting yield in the same message) must not leave a dangling tool_use; the
+    next run_turn must send a valid history to the provider."""
+    # Turn 1, call 1: two parallel spawns AND a yield in the SAME message — the
+    # buggy path returned at the yield without recording the spawn tool_results.
+    script = [
+        _SResp(
+            [
+                _SBlock("text", text="Delegating."),
+                _SBlock("tool_use", id="spawn_1", name="spawn_sub_agent",
+                        input={"role": "coder", "task": "write code"}),
+                _SBlock("tool_use", id="spawn_2", name="spawn_sub_agent",
+                        input={"role": "tester", "task": "write tests"}),
+                _SBlock("tool_use", id="yield_1", name="yield_to_user",
+                        input={"message": "Kicked off the work."}),
+            ],
+            "tool_use",
+        ),
+        # Turn 2, call 1: simple yield ending the turn.
+        _SResp(
+            [_SBlock("tool_use", id="yield_2", name="yield_to_user",
+                     input={"message": "All done."})],
+            "tool_use",
+        ),
+    ]
+    provider = _ValidatingProvider(script)
+    agent = _make_agent(provider)
+
+    await agent.run_turn("Do a complex task.")
+    # After the first turn the persisted history must already be valid.
+    _assert_valid_sequence(agent.messages)
+
+    # Second turn must send a valid history to the provider (would 400 before).
+    await agent.run_turn("Now continue.")
+    assert provider.orch_calls == 2
+    for snapshot in provider.seen:
+        _assert_valid_sequence(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_valid_history_after_forced_compaction(tmp_path):
+    """Bug B: forcing compaction on a history that contains tool_use/tool_result
+    pairs must not orphan a tool_result; the next run_turn must send a valid
+    history."""
+    from itakt.compaction import compact_messages
+    from itakt.config import ContextConfig
+    from itakt.orchestrator import ORCHESTRATOR_SYSTEM
+
+    # A history where the default split boundary would fall on a tool_result
+    # message (orphaning it from its tool_use after compaction).
+    history = [
+        {"role": "user", "content": "task one"},
+        {"role": "assistant", "content": [{"type": "text", "text": "done one"}]},
+        {"role": "user", "content": "task two"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "read_file",
+             "input": {"path": "a.py"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "file a"}]},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "read_file",
+             "input": {"path": "b.py"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t2", "content": "file b"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "done two"}]},
+    ]
+
+    script = [
+        _SResp([_SBlock("tool_use", id="yield_c", name="yield_to_user",
+                        input={"message": "Continuing."})], "tool_use"),
+    ]
+    provider = _ValidatingProvider(script)
+    agent = _make_agent(provider)
+    agent._started = True
+    agent.messages = copy.deepcopy(history)
+
+    # Force compaction (preserve_recent=2 → default boundary lands on the t1
+    # tool_result message).
+    cfg = ContextConfig(compaction_threshold=0.6, preserve_recent=2,
+                        max_tool_result_tokens=2000, context_window_tokens=200_000)
+    agent.messages = await compact_messages(
+        messages=agent.messages,
+        system=ORCHESTRATOR_SYSTEM,
+        context_cfg=cfg,
+        provider=provider,
+        model_cfg=agent._config.models.compaction,
+        agent_name="repl-session",
+        traces_dir=str(tmp_path / "traces"),
+    )
+
+    # The compaction output itself must be a valid sequence (root-cause check).
+    _assert_valid_sequence(agent.messages)
+
+    # And a following run_turn must send a valid history (would 400 before).
+    await agent.run_turn("continue please")
+    assert provider.orch_calls == 1
+    for snapshot in provider.seen:
+        _assert_valid_sequence(snapshot)

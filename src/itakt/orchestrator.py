@@ -110,6 +110,97 @@ def _normalize_for_continuation(messages: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# History validation / repair — keep the tool_use ⇄ tool_result contract
+# ---------------------------------------------------------------------------
+
+def _tool_use_ids(message: dict) -> list[str]:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    return [b["id"] for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b]
+
+
+def _tool_result_ids(message: dict) -> set[str]:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {b.get("tool_use_id") for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_result"}
+
+
+def _validate_history(messages: list[dict]) -> None:
+    """Raise ``AssertionError`` unless *messages* is a valid Anthropic sequence.
+
+    Contract enforced:
+      * every ``tool_use`` block is answered by a ``tool_result`` with the same
+        id in the *immediately following* message;
+      * every ``tool_result`` block answers a ``tool_use`` in the *immediately
+        preceding* message (no orphans);
+      * the sequence does not end on an unanswered ``tool_use``.
+    """
+    n = len(messages)
+    for i, msg in enumerate(messages):
+        use_ids = _tool_use_ids(msg)
+        if use_ids:
+            assert i + 1 < n, f"history ends on unanswered tool_use {use_ids}"
+            answered = _tool_result_ids(messages[i + 1])
+            for tid in use_ids:
+                assert tid in answered, f"tool_use {tid} has no matching tool_result"
+        result_ids = _tool_result_ids(msg)
+        if result_ids:
+            prev_use = set(_tool_use_ids(messages[i - 1])) if i > 0 else set()
+            for rid in result_ids:
+                assert rid in prev_use, f"orphan tool_result {rid}"
+
+
+def _drop_tool_use_except(message: dict, keep_ids: set[str]) -> None:
+    """Remove ``tool_use`` blocks from *message* whose id is not in *keep_ids*.
+
+    If that empties an assistant message, leave a minimal text block so the
+    message stays valid (Anthropic rejects empty content).
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    kept = [b for b in content
+            if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                    and b.get("id") not in keep_ids)]
+    if not kept:
+        kept = [{"type": "text", "text": "(done)"}]
+    message["content"] = kept
+
+
+def _repair_history(messages: list[dict]) -> None:
+    """Repair *messages* in place so it satisfies :func:`_validate_history`.
+
+    Catch-all guard for histories carried across REPL turns: drop orphan
+    ``tool_result`` blocks, then drop any ``tool_use`` block left unanswered by
+    the immediately following message.  Idempotent on already-valid histories.
+    """
+    n = len(messages)
+    # Pass 1 — drop orphan tool_result blocks (no matching preceding tool_use).
+    for i, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            continue
+        prev_use = set(_tool_use_ids(messages[i - 1])) if i > 0 else set()
+        msg["content"] = [
+            b for b in content
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") not in prev_use)
+        ]
+    # Pass 2 — drop tool_use blocks the next message does not answer.
+    for i, msg in enumerate(messages):
+        if not _tool_use_ids(msg):
+            continue
+        answered = _tool_result_ids(messages[i + 1]) if i + 1 < n else set()
+        _drop_tool_use_except(msg, answered)
+
+
+# ---------------------------------------------------------------------------
 # Core loop (extracted so ConversationAgent can reuse it)
 # ---------------------------------------------------------------------------
 
@@ -161,6 +252,10 @@ async def _orchestrator_loop(
             except Exception:
                 pass
 
+        # Catch-all guard: never send a turn with a dangling tool_use or an
+        # orphan tool_result (e.g. history carried over from a prior turn).
+        _repair_history(messages)
+
         response = await provider.complete(
             system=ORCHESTRATOR_SYSTEM,
             messages=messages,
@@ -198,9 +293,14 @@ async def _orchestrator_loop(
                     return block.text, last_compacted_at
             return "(orchestrator finished with no text)", last_compacted_at
 
-        # Scan for yield_to_user (always handled first)
+        # Scan for yield_to_user (always handled first).  If the model emitted
+        # other tool_use blocks alongside the yield, we are terminating the turn
+        # and will not execute them — strip them so the stored assistant message
+        # never leaves an unanswered tool_use behind (the yield block itself is
+        # kept and later converted to text by _normalize_for_continuation).
         for block in response.content:
             if block.type == "tool_use" and block.name == "yield_to_user":
+                _drop_tool_use_except(messages[-1], {block.id})
                 return block.input.get("message", "(no message)"), last_compacted_at
 
         # Partition all tool calls
@@ -359,6 +459,12 @@ class ConversationAgent:
         # message is always a valid continuation (Anthropic API requires
         # tool_result before a new user turn, not a bare user message).
         _normalize_for_continuation(self.messages)
+
+        # Final guard: ensure the persisted history is a valid sequence for the
+        # next turn — drop any dangling tool_use (e.g. spawn calls emitted in the
+        # same message as a yield) or orphan tool_result. Runs after normalize so
+        # the yield-derived text block is preserved.
+        _repair_history(self.messages)
 
         # Edge case: budget_cap fires before any API call (messages still ends
         # with the user message we just appended).  Add the reply as an

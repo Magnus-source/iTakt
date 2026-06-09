@@ -298,6 +298,83 @@ def test_compaction_guard_initial_value():
     assert 2 != last_compacted_at + 1
 
 
+# ---------------------------------------------------------------------------
+# Tool-pair-safe compaction boundary (Bug B fix)
+# ---------------------------------------------------------------------------
+
+def _tool_pair_history() -> list[dict]:
+    return [
+        {"role": "user", "content": "task one"},
+        {"role": "assistant", "content": [{"type": "text", "text": "done one"}]},
+        {"role": "user", "content": "task two"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "a"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "a"}]},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "read_file", "input": {"path": "b"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t2", "content": "b"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "done two"}]},
+    ]
+
+
+def test_safe_split_index_skips_tool_result_boundary():
+    """The default boundary lands on a tool_result message; the safe index must
+    move earlier to a genuine user turn so no pair is split."""
+    from itakt.compaction import _safe_split_index
+
+    history = _tool_pair_history()  # len 8
+    preserve_n = 2
+    default = len(history) - preserve_n  # 6 → user(tool_result t2)
+    assert history[default]["content"][0]["type"] == "tool_result"
+
+    split = _safe_split_index(history, preserve_n)
+    assert history[split]["role"] == "user"
+    # the chosen boundary is a genuine user turn (not a tool_result message)
+    assert history[split]["content"] == "task two"
+
+
+@pytest.mark.asyncio
+async def test_compact_keeps_tool_pairs_intact(tmp_path):
+    """After compacting a history with tool_use/tool_result pairs, the result
+    must be a valid sequence: no orphan tool_result, every tool_use answered."""
+    from itakt.compaction import compact_messages
+    from itakt.config import ModelConfig
+
+    history = _tool_pair_history()
+    cfg = make_context_cfg(preserve_recent=1)  # preserve_n=2 → default on a pair
+    provider = FakeProvider("Summary.")
+    model_cfg = ModelConfig(model="fake", max_tokens=512)
+
+    result = await compact_messages(
+        messages=history,
+        system="sys",
+        context_cfg=cfg,
+        provider=provider,
+        model_cfg=model_cfg,
+        agent_name="pair-test",
+        traces_dir=str(tmp_path / "traces"),
+    )
+
+    # No orphan tool_result: every tool_result has its tool_use in the prev msg.
+    for i, msg in enumerate(result):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        rids = {b.get("tool_use_id") for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_result"}
+        if rids:
+            prev = result[i - 1].get("content", []) if i > 0 else []
+            prev_uids = {b.get("id") for b in prev
+                         if isinstance(b, dict) and b.get("type") == "tool_use"}
+            assert rids <= prev_uids, f"orphan tool_result at index {i}: {rids - prev_uids}"
+    # Roles still alternate (summary/ack pair + kept tail).
+    roles = [m["role"] for m in result]
+    for i in range(len(roles) - 1):
+        assert roles[i] != roles[i + 1], f"non-alternating roles: {roles}"
+
+
 @pytest.mark.asyncio
 async def test_compact_does_not_immediately_refire(tmp_path):
     """After compaction, should_compact must return False on the very next check

@@ -41,6 +41,52 @@ def should_compact(messages: list[dict], context_cfg: ContextConfig) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tool-pair-safe split boundary
+# ---------------------------------------------------------------------------
+
+def _is_tool_result_message(msg: dict) -> bool:
+    """True when *msg* carries one or more ``tool_result`` blocks.
+
+    Such a message only makes sense immediately after the assistant
+    ``tool_use`` message it answers — it must never become the first kept
+    message after compaction, or its matching ``tool_use`` is gone.
+    """
+    content = msg.get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
+
+
+def _safe_split_index(messages: list[dict], preserve_n: int) -> int:
+    """Return a split index that never separates a tool_use from its tool_result.
+
+    The compactor keeps ``messages[split:]`` verbatim and summarises
+    ``messages[:split]``.  We move the default boundary
+    (``len - preserve_n``) *earlier* until it lands on a genuine user turn —
+    i.e. a ``user`` message that is **not** a ``tool_result`` message.  That
+    guarantees:
+
+      * the kept tail starts with a user message (alternation stays valid after
+        the injected summary/ack pair), and
+      * no tool_use/tool_result pair is split across the boundary.
+
+    Returns ``0`` when no safe boundary exists at/before the default (the whole
+    history is one unbroken exchange); the caller then skips compaction.
+    """
+    if preserve_n <= 0:
+        return len(messages)
+    split = len(messages) - preserve_n
+    if split <= 0:
+        return 0
+    while split > 0 and (
+        messages[split].get("role") != "user"
+        or _is_tool_result_message(messages[split])
+    ):
+        split -= 1
+    return split
+
+
+# ---------------------------------------------------------------------------
 # Message serialisation helper
 # ---------------------------------------------------------------------------
 
@@ -98,8 +144,15 @@ async def compact_messages(
     if len(messages) <= preserve_n + 1:
         return messages  # nothing old enough to compact
 
-    to_compact = messages[:-preserve_n] if preserve_n else messages[:]
-    to_keep = messages[-preserve_n:] if preserve_n else []
+    # Choose a boundary that never splits a tool_use/tool_result pair.  If no
+    # safe boundary exists at/before the default, the history is one unbroken
+    # exchange — leave it untouched rather than emit an invalid sequence.
+    split = _safe_split_index(messages, preserve_n)
+    if split <= 0:
+        return messages
+
+    to_compact = messages[:split]
+    to_keep = messages[split:]
 
     before_tokens = estimate_tokens(messages)
 
